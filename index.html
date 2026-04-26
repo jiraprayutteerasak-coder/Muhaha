@@ -1,0 +1,1129 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sukhothai Wittayakom – Digital Gateway</title>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700;800&family=Kanit:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: '#5B4FBE',
+            'primary-light': '#7C6FD4',
+            'primary-dark': '#3D3499',
+            lavender: '#E8E5F8',
+            'lavender-mid': '#D0CBEF',
+            surface: '#F5F4FC',
+            accent: '#967BB6',
+          },
+          fontFamily: {
+            thai: ['Sarabun', 'sans-serif'],
+            heading: ['Kanit', 'sans-serif'],
+          },
+        }
+      }
+    }
+  </script>
+
+  <!-- Firebase SDK -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js";
+    import {
+      getAuth, signInWithPopup, GoogleAuthProvider,
+      signInAnonymously, onAuthStateChanged, signOut, createUserWithEmailAndPassword
+    } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js";
+    import {
+      getFirestore, doc, getDoc, setDoc, updateDoc,
+      collection, getDocs, addDoc, serverTimestamp, increment
+    } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js";
+    import {
+      getStorage, ref, uploadBytes, getDownloadURL
+    } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-storage.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyB6Cd4IMBo3hvg3tiPo6CcTGwvNHOYPi6c",
+      authDomain: "esplink-91beb.firebaseapp.com",
+      projectId: "esplink-91beb",
+      storageBucket: "esplink-91beb.firebasestorage.app",
+      messagingSenderId: "412345503263",
+      appId: "1:412345503263:web:3a0fa09ef79b0a5a960f2a",
+      measurementId: "G-6756RCYSYL"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    const storage = getStorage(app);
+    const googleProvider = new GoogleAuthProvider();
+    googleProvider.setCustomParameters({ hd: 'swk.ac.th' });
+
+    // Defer DOM-dependent initialization until elements exist.
+    window.addEventListener('DOMContentLoaded', () => {
+      // ── Globals ──────────────────────────────────────────────────────────
+      let currentUser = null;
+      let currentUserData = null;
+      let lastHomeChoice = null; // 'merit' or 'umbrella' - used to return user to chosen service
+
+      // ── Page routing ─────────────────────────────────────────────────────
+      const pages = {
+        home: document.getElementById('page-home'),
+        login: document.getElementById('page-login'),
+        dashboard: document.getElementById('page-dashboard'),
+        criteria: document.getElementById('page-criteria'),
+        submit: document.getElementById('page-submit'),
+        umbrella: document.getElementById('page-umbrella'),
+      };
+
+      function showPage(name) {
+        Object.values(pages).forEach(p => p.classList.add('hidden'));
+        pages[name].classList.remove('hidden');
+        window.scrollTo(0, 0);
+      }
+
+      // ── Auth state ────────────────────────────────────────────────────────
+      // If a user is already signed in, keep them signed-in but show the home
+      // selection so they can choose between services. Only the login step is skipped
+      // when they actually click a service (handled in the click handlers).
+      onAuthStateChanged(auth, async (user) => {
+        if (user) {
+          currentUser = user;
+          await loadUserData(user);
+          // Show the home selection (do not auto-navigate to dashboard)
+          showPage('home');
+        } else {
+          currentUser = null;
+          currentUserData = null;
+          showPage('home');
+        }
+      });
+
+      // ── User data helpers ─────────────────────────────────────────────────
+      async function loadUserData(user) {
+        const ref = doc(db, 'users', user.uid);
+        const snap = await getDoc(ref);
+        if (!snap.exists()) {
+          const data = {
+            uid: user.uid,
+            displayName: user.displayName || 'นักเรียน',
+            studentId: user.studentId || '',
+            email: user.email || '',
+            points: 0,
+            createdAt: serverTimestamp(),
+          };
+          await setDoc(ref, data);
+          currentUserData = data;
+        } else {
+          currentUserData = snap.data();
+        }
+      }
+
+    async function getAllUsers() {
+      const snap = await getDocs(collection(db, 'users'));
+      return snap.docs.map(d => d.data());
+    }
+
+    function calcRank(myPoints, allUsers) {
+      const total = allUsers.length;
+      if (total === 0) return { tier: 'No Rank', level: 0, next: 'Silver' };
+
+      const sorted = [...allUsers].sort((a, b) => b.points - a.points);
+      const myRankIdx = sorted.findIndex(u => u.points <= myPoints);
+      const topTen = Math.min(10, total);
+
+      // Position (1-based)
+      const pos = sorted.filter(u => u.points > myPoints).length + 1;
+
+      if (pos <= topTen) return { tier: 'Top Class', level: pos, next: null, color: '#FFD700' };
+
+      const pctBelow = sorted.filter(u => u.points < myPoints).length / total;
+
+      if (pctBelow >= 0.80) return { tier: 'Diamond', level: Math.round(pctBelow * 100), next: 'Top Class', color: '#00D4FF' };
+      if (pctBelow >= 0.50) return { tier: 'Gold', level: Math.round(pctBelow * 100), next: 'Diamond', color: '#F4A200' };
+      if (pctBelow >= 0.30) return { tier: 'Silver', level: Math.round(pctBelow * 100), next: 'Gold', color: '#A8A9AD' };
+
+      return { tier: 'No Rank', level: 0, next: 'Silver', color: '#967BB6' };
+    }
+
+    // ── Render Dashboard ──────────────────────────────────────────────────
+    async function renderDashboard() {
+      if (!currentUserData) return;
+
+      const allUsers = await getAllUsers();
+      const rank = calcRank(currentUserData.points || 0, allUsers);
+
+      document.getElementById('db-name').textContent = currentUserData.displayName || 'นักเรียน';
+      document.getElementById('db-id').textContent = currentUserData.studentId ? `Student ID: SWK-${currentUserData.studentId}` : (currentUserData.email || '');
+      document.getElementById('db-points').textContent = (currentUserData.points || 0).toLocaleString();
+
+      const tierEl = document.getElementById('db-tier');
+      tierEl.textContent = rank.tier;
+      tierEl.style.color = rank.color || '#5B4FBE';
+
+      document.getElementById('db-rank-next').textContent = rank.next ? `Next: ${rank.next}` : '🏆 Max Tier';
+      document.getElementById('db-level').textContent = `Level ${rank.level}`;
+
+      // Progress bar
+      const pct = Math.min(100, rank.level);
+      document.getElementById('db-progress').style.width = pct + '%';
+
+      // Activity log
+      await renderActivityLog();
+    }
+
+    async function renderActivityLog() {
+      if (!currentUser) return;
+      try {
+        const snap = await getDocs(collection(db, 'users', currentUser.uid, 'activities'));
+        const acts = snap.docs.map(d => d.data()).sort((a, b) => {
+          const ta = a.createdAt?.toMillis?.() || 0;
+          const tb = b.createdAt?.toMillis?.() || 0;
+          return tb - ta;
+        }).slice(0, 5);
+
+        const icons = {
+          'เก็บขยะ': '🗑️',
+          'ปิดไฟและแอร์': '💡',
+          'ทำความสะอาดห้องเรียน': '🧹',
+          'กิจกรรมอาสาอื่นๆ': '🤝',
+        };
+        const pts = { 'เก็บขยะ': 20, 'ปิดไฟและแอร์': 25, 'ทำความสะอาดห้องเรียน': 30, 'กิจกรรมอาสาอื่นๆ': 15 };
+
+        const container = document.getElementById('activity-log');
+        if (acts.length === 0) {
+          container.innerHTML = '<p class="text-gray-400 text-sm text-center py-4">ยังไม่มีกิจกรรม</p>';
+          return;
+        }
+        container.innerHTML = acts.map(a => {
+          const date = a.createdAt?.toDate ? a.createdAt.toDate().toLocaleDateString('th-TH', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'เมื่อกี้';
+          return `
+            <div class="flex items-center justify-between py-3 border-b border-lavender last:border-0">
+              <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-xl bg-lavender flex items-center justify-center text-lg">${icons[a.type] || '⭐'}</div>
+                <div>
+                  <p class="font-semibold text-gray-800 text-sm font-thai">${a.type}</p>
+                  <p class="text-xs text-gray-400 font-thai">${date}</p>
+                </div>
+              </div>
+              <span class="text-green-500 font-bold text-sm">+${pts[a.type] || 0}</span>
+            </div>`;
+        }).join('');
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    // ── Google Login ──────────────────────────────────────────────────────
+    document.getElementById('btn-google-login').addEventListener('click', async () => {
+      try {
+        showToast('กำลังเข้าสู่ระบบ...', 'info');
+        const result = await signInWithPopup(auth, googleProvider);
+        currentUser = result.user;
+        await loadUserData(result.user);
+        showPage('dashboard');
+        renderDashboard();
+      } catch (e) {
+        showToast('เข้าสู่ระบบไม่สำเร็จ: ' + e.message, 'error');
+      }
+    });
+
+    // ── Student ID Login ──────────────────────────────────────────────────
+    const nameInput = document.getElementById('login-name');
+    const idInput = document.getElementById('login-id');
+    const signInBtn = document.getElementById('btn-signin');
+
+    function validateLoginForm() {
+      const nameOk = /^[a-zA-Zก-๙\s]+$/.test(nameInput.value.trim()) && nameInput.value.trim().length > 0;
+      const idOk = /^\d{5}$/.test(idInput.value.trim());
+      signInBtn.disabled = !(nameOk && idOk);
+      signInBtn.classList.toggle('opacity-50', signInBtn.disabled);
+      signInBtn.classList.toggle('cursor-not-allowed', signInBtn.disabled);
+    }
+    nameInput.addEventListener('input', validateLoginForm);
+    idInput.addEventListener('input', validateLoginForm);
+
+    signInBtn.addEventListener('click', async () => {
+      const name = nameInput.value.trim();
+      const id = idInput.value.trim();
+      try {
+        showToast('กำลังเข้าสู่ระบบ...', 'info');
+        // Use student id as pseudo-auth (anonymous + store data)
+        const result = await signInAnonymously(auth);
+        const user = result.user;
+        const userRef = doc(db, 'users', user.uid);
+        const snap = await getDoc(userRef);
+        if (!snap.exists()) {
+          await setDoc(userRef, {
+            uid: user.uid,
+            displayName: name,
+            studentId: id,
+            email: '',
+            points: 0,
+            createdAt: serverTimestamp(),
+          });
+        } else {
+          await updateDoc(userRef, { displayName: name, studentId: id });
+        }
+        currentUser = user;
+        await loadUserData(user);
+        showPage('dashboard');
+        renderDashboard();
+      } catch (e) {
+        showToast('เข้าสู่ระบบไม่สำเร็จ: ' + e.message, 'error');
+      }
+    });
+
+    // ── Submit Good Deed ──────────────────────────────────────────────────
+    const activityPts = {
+      'เก็บขยะ': 20,
+      'ปิดไฟและแอร์': 25,
+      'ทำความสะอาดห้องเรียน': 30,
+      'กิจกรรมอาสาอื่นๆ': 15,
+    };
+
+    function checkSubmitTime() {
+      const now = new Date();
+      const h = now.getHours();
+      const allowed = h >= 6 && h < 17;
+      const btn = document.getElementById('btn-confirm-submit');
+      const warn = document.getElementById('time-warning');
+      btn.disabled = !allowed;
+      btn.classList.toggle('opacity-50', !allowed);
+      btn.classList.toggle('cursor-not-allowed', !allowed);
+      warn.classList.toggle('hidden', allowed);
+    }
+
+    document.getElementById('btn-confirm-submit').addEventListener('click', async () => {
+      const type = document.getElementById('activity-type').value;
+      const desc = document.getElementById('activity-desc').value.trim();
+      const fileInput = document.getElementById('photo-upload');
+      const file = fileInput.files[0];
+
+      // Require a photo as evidence
+      if (!file) return showToast('กรุณาแนบรูปหลักฐานก่อนส่ง', 'error');
+      if (!type) return showToast('กรุณาเลือกประเภทกิจกรรม', 'error');
+      if (!desc) return showToast('กรุณาใส่รายละเอียด', 'error');
+
+      const btn = document.getElementById('btn-confirm-submit');
+      btn.textContent = 'กำลังบันทึก...';
+      btn.disabled = true;
+
+      try {
+        let photoURL = '';
+        if (file) {
+          const storageRef = ref(storage, `activities/${currentUser.uid}/${Date.now()}_${file.name}`);
+          await uploadBytes(storageRef, file);
+          photoURL = await getDownloadURL(storageRef);
+        }
+
+        const pts = activityPts[type] || 0;
+
+        // Save activity
+        await addDoc(collection(db, 'users', currentUser.uid, 'activities'), {
+          type, desc, photoURL, points: pts, createdAt: serverTimestamp()
+        });
+
+        // Update total
+        await updateDoc(doc(db, 'users', currentUser.uid), { points: increment(pts) });
+
+        currentUserData.points = (currentUserData.points || 0) + pts;
+        showToast(`✅ บันทึกสำเร็จ! +${pts} คะแนน`, 'success');
+
+        // Reset form
+        document.getElementById('activity-type').value = '';
+        document.getElementById('activity-desc').value = '';
+        fileInput.value = '';
+        document.getElementById('desc-count').textContent = '0/300';
+        document.getElementById('photo-preview').classList.add('hidden');
+
+        // Show submission success page
+        setTimeout(() => {
+          showPage('success');
+        }, 700);
+      } catch (e) {
+        showToast('เกิดข้อผิดพลาด: ' + e.message, 'error');
+        btn.textContent = 'Confirm Submission →';
+        btn.disabled = false;
+      }
+    });
+
+    // Desc counter
+    document.getElementById('activity-desc').addEventListener('input', function() {
+      document.getElementById('desc-count').textContent = this.value.length + '/300';
+    });
+
+    // Photo preview
+    document.getElementById('photo-upload').addEventListener('change', function() {
+      if (this.files[0]) {
+        const url = URL.createObjectURL(this.files[0]);
+        const preview = document.getElementById('photo-preview');
+        preview.src = url;
+        preview.classList.remove('hidden');
+      }
+    });
+
+    // ── Navigation buttons ────────────────────────────────────────────────
+    document.getElementById('btn-merit-bank').addEventListener('click', async () => {
+      lastHomeChoice = 'merit';
+      // If user already signed in (persisted), skip login and go to dashboard
+      if (auth.currentUser) {
+        try {
+          currentUser = auth.currentUser;
+          await loadUserData(currentUser);
+          showPage('dashboard');
+          renderDashboard();
+        } catch (e) {
+          // fallback to login on error
+          showPage('login');
+        }
+      } else {
+        showPage('login');
+      }
+    });
+    document.getElementById('btn-umbrella').addEventListener('click', () => { lastHomeChoice = 'umbrella'; showPage('umbrella'); });
+    document.getElementById('btn-back-login').addEventListener('click', () => showPage('home'));
+    // Back button on dashboard should return to the main home selection
+    document.getElementById('btn-back-dashboard').addEventListener('click', () => { 
+      showPage('home'); 
+      window.scrollTo(0,0);
+    });
+    document.getElementById('btn-back-criteria').addEventListener('click', () => { showPage('dashboard'); renderDashboard(); });
+    document.getElementById('btn-back-submit').addEventListener('click', () => { showPage('dashboard'); renderDashboard(); });
+    document.getElementById('btn-back-umbrella').addEventListener('click', () => showPage('home'));
+
+    document.getElementById('btn-criteria').addEventListener('click', () => showPage('criteria'));
+    document.getElementById('btn-send-points').addEventListener('click', () => {
+      checkSubmitTime();
+      showPage('submit');
+    });
+
+    document.getElementById('btn-logout').addEventListener('click', async () => {
+      await signOut(auth);
+      showPage('home');
+    });
+
+    // ── Toast helper ──────────────────────────────────────────────────────
+    function showToast(msg, type = 'info') {
+      const t = document.getElementById('toast');
+      const colors = { success: 'bg-green-500', error: 'bg-red-500', info: 'bg-primary' };
+      t.className = `fixed bottom-6 left-1/2 -translate-x-1/2 px-6 py-3 rounded-2xl text-white text-sm font-thai font-medium shadow-xl z-50 transition-all duration-300 ${colors[type]}`;
+      t.textContent = msg;
+      t.classList.remove('opacity-0', 'translate-y-4');
+      clearTimeout(window._toastTimer);
+      window._toastTimer = setTimeout(() => { t.classList.add('opacity-0', 'translate-y-4'); }, 3000);
+    }
+
+    // Photo upload click area
+    document.getElementById('upload-area').addEventListener('click', () => {
+      document.getElementById('photo-upload').click();
+    });
+
+    // Success page back button — always return to the initial home selection
+    const successBackBtn = document.getElementById('btn-success-back');
+    if (successBackBtn) {
+      successBackBtn.addEventListener('click', () => {
+        // Clear any remembered service choice so user sees the initial selection
+        lastHomeChoice = null;
+        showPage('home');
+        window.scrollTo(0, 0);
+      });
+    }
+    });
+  </script>
+
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Sarabun', sans-serif;
+      background: #F5F4FC;
+      min-height: 100vh;
+    }
+    .hidden { display: none !important; }
+
+    /* Inthanin flower SVG pattern */
+    .inthanin-bg {
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80' viewBox='0 0 80 80'%3E%3Cg fill='%235B4FBE' fill-opacity='0.04'%3E%3Cellipse cx='40' cy='20' rx='8' ry='14'/%3E%3Cellipse cx='40' cy='60' rx='8' ry='14'/%3E%3Cellipse cx='20' cy='40' rx='14' ry='8'/%3E%3Cellipse cx='60' cy='40' rx='14' ry='8'/%3E%3Cellipse cx='26' cy='26' rx='8' ry='14' transform='rotate(45 26 26)'/%3E%3Cellipse cx='54' cy='54' rx='8' ry='14' transform='rotate(45 54 54)'/%3E%3Cellipse cx='54' cy='26' rx='8' ry='14' transform='rotate(-45 54 26)'/%3E%3Cellipse cx='26' cy='54' rx='8' ry='14' transform='rotate(-45 26 54)'/%3E%3Ccircle cx='40' cy='40' r='6'/%3E%3C/g%3E%3C/svg%3E");
+    }
+
+    .card {
+      background: white;
+      border-radius: 20px;
+      box-shadow: 0 4px 24px rgba(91,79,190,0.08);
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #5B4FBE, #7C6FD4);
+      color: white;
+      border-radius: 14px;
+      font-weight: 600;
+      transition: all 0.2s;
+      box-shadow: 0 4px 16px rgba(91,79,190,0.3);
+    }
+    .btn-primary:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 20px rgba(91,79,190,0.4);
+    }
+
+    .progress-bar {
+      background: linear-gradient(90deg, #5B4FBE, #9B8EFF);
+      border-radius: 999px;
+      transition: width 0.8s ease;
+    }
+
+    .tier-badge {
+      font-family: 'Kanit', sans-serif;
+      font-weight: 800;
+      font-size: 3rem;
+      letter-spacing: -1px;
+      line-height: 1;
+    }
+
+    /* Flower decoration */
+    .flower-deco {
+      position: absolute;
+      opacity: 0.07;
+      pointer-events: none;
+    }
+
+    /* Smooth page transitions */
+    [id^="page-"] {
+      animation: fadeIn 0.3s ease;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Input styles */
+    .form-input {
+      width: 100%;
+      background: #F0EEFA;
+      border: 2px solid transparent;
+      border-radius: 12px;
+      padding: 12px 16px;
+      font-family: 'Sarabun', sans-serif;
+      font-size: 15px;
+      outline: none;
+      transition: border-color 0.2s;
+      color: #2D2D5B;
+    }
+    .form-input:focus { border-color: #5B4FBE; background: white; }
+    .form-input::placeholder { color: #B0A8D9; }
+
+    /* Navbar */
+    .navbar {
+      background: rgba(255,255,255,0.92);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid rgba(91,79,190,0.08);
+      position: sticky;
+      top: 0;
+      z-index: 40;
+    }
+
+    /* Stats counter */
+    .stat-number {
+      font-family: 'Kanit', sans-serif;
+      font-weight: 700;
+      color: #5B4FBE;
+      font-size: 1.8rem;
+    }
+
+    /* Activity card hover */
+    .activity-card {
+      transition: all 0.2s;
+      cursor: default;
+    }
+    .activity-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 28px rgba(91,79,190,0.15);
+    }
+
+    /* Dashed upload */
+    .upload-area {
+      border: 2px dashed #C4BBE8;
+      border-radius: 16px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .upload-area:hover { border-color: #5B4FBE; background: #F0EEFA; }
+
+    @media (max-width: 640px) {
+      .tier-badge { font-size: 2.2rem; }
+    }
+  </style>
+</head>
+<body class="inthanin-bg">
+
+<!-- ════════════════════════════════════════════
+     TOAST
+════════════════════════════════════════════ -->
+<div id="toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 px-6 py-3 rounded-2xl text-white text-sm font-thai font-medium shadow-xl z-50 opacity-0 translate-y-4 transition-all duration-300 bg-primary"></div>
+
+<!-- ════════════════════════════════════════════
+     PAGE 1 – HOME
+════════════════════════════════════════════ -->
+<div id="page-home">
+  <!-- Navbar -->
+  <nav class="navbar px-6 py-4 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-9 h-9 rounded-xl bg-primary flex items-center justify-center">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c3 3 9 3 12 0v-5"/></svg>
+      </div>
+      <span class="font-heading font-bold text-primary text-sm tracking-widest uppercase">Sukhothai Wittayakom</span>
+    </div>
+    <button class="w-9 h-9 rounded-full bg-lavender flex items-center justify-center text-primary hover:bg-lavender-mid transition-colors">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+    </button>
+  </nav>
+
+  <!-- Hero -->
+  <section class="relative px-6 py-16 text-center overflow-hidden">
+    <!-- Decorative flowers -->
+    <svg class="flower-deco" style="width:200px;top:-20px;left:-40px" viewBox="0 0 200 200">
+      <g fill="#5B4FBE"><ellipse cx="100" cy="50" rx="25" ry="45"/><ellipse cx="100" cy="150" rx="25" ry="45"/><ellipse cx="50" cy="100" rx="45" ry="25"/><ellipse cx="150" cy="100" rx="45" ry="25"/><ellipse cx="65" cy="65" rx="25" ry="45" transform="rotate(45 65 65)"/><ellipse cx="135" cy="135" rx="25" ry="45" transform="rotate(45 135 135)"/><ellipse cx="135" cy="65" rx="25" ry="45" transform="rotate(-45 135 65)"/><ellipse cx="65" cy="135" rx="25" ry="45" transform="rotate(-45 65 135)"/><circle cx="100" cy="100" r="18"/></g>
+    </svg>
+    <svg class="flower-deco" style="width:160px;bottom:-30px;right:-20px" viewBox="0 0 200 200">
+      <g fill="#967BB6"><ellipse cx="100" cy="50" rx="25" ry="45"/><ellipse cx="100" cy="150" rx="25" ry="45"/><ellipse cx="50" cy="100" rx="45" ry="25"/><ellipse cx="150" cy="100" rx="45" ry="25"/><ellipse cx="65" cy="65" rx="25" ry="45" transform="rotate(45 65 65)"/><ellipse cx="135" cy="135" rx="25" ry="45" transform="rotate(45 135 135)"/><ellipse cx="135" cy="65" rx="25" ry="45" transform="rotate(-45 135 65)"/><ellipse cx="65" cy="135" rx="25" ry="45" transform="rotate(-45 65 135)"/><circle cx="100" cy="100" r="18"/></g>
+    </svg>
+
+    <div class="inline-flex items-center gap-2 bg-white/80 border border-lavender-mid rounded-full px-4 py-1.5 mb-6">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="#5B4FBE"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8" fill="white"/></svg>
+      <span class="text-primary text-xs font-heading font-semibold tracking-widest uppercase">Digital Gateway</span>
+    </div>
+
+    <h1 class="font-heading font-bold text-4xl md:text-5xl text-gray-900 mb-4 leading-tight">
+      ยินดีต้อนรับสู่<br/>ระบบบริการ
+    </h1>
+    <p class="text-gray-500 font-thai text-base max-w-sm mx-auto leading-relaxed">
+      ยกระดับชีวิตวิชาการด้วยเทคโนโลยีที่เข้าถึงง่าย รวดเร็ว และเป็นกันเอง<br/>
+      สำหรับชาวสุโขทัยวิทยาคม
+    </p>
+  </section>
+
+  <!-- Service Cards -->
+  <section class="px-6 pb-8 grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-2xl mx-auto">
+    <!-- Merit Bank -->
+    <button id="btn-merit-bank" class="card activity-card p-6 text-left w-full">
+      <div class="w-14 h-14 rounded-2xl bg-gray-800 flex items-center justify-center mb-4">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#F5C518" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="2" fill="#F5C518"/></svg>
+      </div>
+      <h3 class="font-heading font-bold text-xl text-gray-900 mb-2">ธนาคารแต้มบุญ</h3>
+      <p class="font-thai text-gray-500 text-sm leading-relaxed">สะสมคะแนนความดีและกิจกรรม เพื่อแลกรับสิทธิประโยชน์ทางการศึกษา</p>
+    </button>
+
+    <!-- Umbrella -->
+    <button id="btn-umbrella" class="card activity-card p-6 text-left w-full">
+      <div class="w-14 h-14 rounded-2xl bg-lavender flex items-center justify-center mb-4">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#5B4FBE" stroke-width="1.8"><path d="M23 12a11.05 11.05 0 0 0-22 0zm-5 7a3 3 0 0 1-6 0v-7"/></svg>
+      </div>
+      <h3 class="font-heading font-bold text-xl text-gray-900 mb-2">ยืมร่ม</h3>
+      <p class="font-thai text-gray-500 text-sm leading-relaxed">บริการยืมร่มฉุกเฉินสำหรับนักเรียนในวันฝนตก สะดวก รวดเร็ว ผ่านระบบดิจิทัล</p>
+    </button>
+  </section>
+
+  <!-- Stats -->
+  <section class="px-6 pb-12 max-w-2xl mx-auto">
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+      <div class="text-center">
+        <div class="stat-number">1,240+</div>
+        <div class="text-xs font-heading font-semibold text-gray-400 tracking-widest uppercase mt-1">Active Users</div>
+      </div>
+      <div class="text-center">
+        <div class="stat-number">450</div>
+        <div class="text-xs font-heading font-semibold text-gray-400 tracking-widest uppercase mt-1">Umbrellas</div>
+      </div>
+      <div class="text-center">
+        <div class="stat-number">98%</div>
+        <div class="text-xs font-heading font-semibold text-gray-400 tracking-widest uppercase mt-1">Satisfaction</div>
+      </div>
+      <div class="text-center">
+        <div class="stat-number">24/7</div>
+        <div class="text-xs font-heading font-semibold text-gray-400 tracking-widest uppercase mt-1">Support</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="bg-gray-900 text-white px-6 py-8">
+    <div class="max-w-4xl mx-auto flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+      <div>
+        <p class="font-heading font-bold text-base">Sukhothai Wittayakom</p>
+        <p class="text-gray-400 text-xs mt-1">© 2024 Sukhothai Wittayakom Digital Services. Scholarly Excellence.</p>
+      </div>
+      <div class="flex gap-6 text-gray-400 text-sm font-thai">
+        <a href="#" class="hover:text-white transition-colors">Academic Portal</a>
+        <a href="#" class="hover:text-white transition-colors">Support</a>
+        <a href="#" class="hover:text-white transition-colors">Privacy</a>
+        <a href="#" class="hover:text-white transition-colors">Compliance</a>
+      </div>
+    </div>
+  </footer>
+</div>
+
+<!-- ════════════════════════════════════════════
+     PAGE 2 – LOGIN
+════════════════════════════════════════════ -->
+<div id="page-login" class="hidden min-h-screen flex flex-col">
+  <!-- Navbar -->
+  <nav class="navbar px-6 py-4 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <button id="btn-back-login" class="w-8 h-8 rounded-full bg-lavender flex items-center justify-center text-primary hover:bg-lavender-mid transition-colors mr-1">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <div class="w-9 h-9 rounded-xl bg-primary flex items-center justify-center">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c3 3 9 3 12 0v-5"/></svg>
+      </div>
+      <span class="font-heading font-bold text-primary text-sm tracking-widest uppercase">Sukhothai Wittayakom</span>
+    </div>
+    <span class="text-gray-400 text-xs font-heading">Student Portal v2.0</span>
+  </nav>
+
+  <!-- Login Card -->
+  <div class="flex-1 flex items-center justify-center px-6 py-12 relative">
+    <svg class="flower-deco" style="width:180px;top:10px;left:-20px;opacity:0.05" viewBox="0 0 200 200">
+      <g fill="#5B4FBE"><ellipse cx="100" cy="50" rx="25" ry="45"/><ellipse cx="100" cy="150" rx="25" ry="45"/><ellipse cx="50" cy="100" rx="45" ry="25"/><ellipse cx="150" cy="100" rx="45" ry="25"/><circle cx="100" cy="100" r="18"/></g>
+    </svg>
+    <svg class="flower-deco" style="width:140px;bottom:20px;right:0;opacity:0.04" viewBox="0 0 200 200">
+      <g fill="#967BB6"><ellipse cx="100" cy="50" rx="25" ry="45"/><ellipse cx="100" cy="150" rx="25" ry="45"/><ellipse cx="50" cy="100" rx="45" ry="25"/><ellipse cx="150" cy="100" rx="45" ry="25"/><circle cx="100" cy="100" r="18"/></g>
+    </svg>
+
+    <div class="card p-8 w-full max-w-md">
+      <!-- Lock icon -->
+      <div class="flex justify-center mb-6">
+        <div class="w-16 h-16 rounded-full bg-lavender flex items-center justify-center">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#5B4FBE" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        </div>
+      </div>
+      <h2 class="font-heading font-bold text-2xl text-gray-900 text-center mb-6">เข้าสู่ระบบ</h2>
+
+      <!-- Name -->
+      <div class="mb-4">
+        <label class="text-xs font-heading font-semibold text-gray-500 tracking-widest uppercase mb-2 block">ชื่อ – นามสกุล</label>
+        <input id="login-name" type="text" placeholder="XXXXXX" class="form-input" autocomplete="off" />
+      </div>
+
+      <!-- Student ID -->
+      <div class="mb-6">
+        <label class="text-xs font-heading font-semibold text-gray-500 tracking-widest uppercase mb-2 block">Student ID</label>
+        <input id="login-id" type="text" maxlength="5" placeholder="•••••" class="form-input tracking-widest" autocomplete="off" inputmode="numeric" />
+        <p class="text-xs text-gray-400 font-thai mt-1">รหัสนักเรียน 5 หลัก (ตัวเลขเท่านั้น)</p>
+      </div>
+
+      <!-- Sign In -->
+      <button id="btn-signin" disabled class="btn-primary w-full py-4 text-base font-thai mb-4 opacity-50 cursor-not-allowed">
+        Sign In
+      </button>
+
+      <!-- Divider -->
+      <div class="flex items-center gap-3 my-5">
+        <div class="flex-1 h-px bg-lavender-mid"></div>
+        <span class="text-xs text-gray-400 font-heading tracking-widest uppercase">OR LOGIN WITH ID</span>
+        <div class="flex-1 h-px bg-lavender-mid"></div>
+      </div>
+
+      <!-- Google -->
+      <button id="btn-google-login" class="w-full flex items-center justify-center gap-3 border-2 border-lavender-mid rounded-2xl py-3.5 font-thai font-semibold text-gray-700 hover:bg-lavender transition-colors">
+        <svg width="20" height="20" viewBox="0 0 24 24"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
+        Login with Student Email
+      </button>
+
+      <div class="flex justify-between mt-4">
+        <button class="text-primary text-sm font-thai hover:underline">Forgot access key?</button>
+        <button class="text-gray-500 text-sm font-thai hover:underline">Enrollment help</button>
+      </div>
+
+      <!-- Security badge -->
+      <div class="flex items-center justify-center gap-2 mt-6 text-gray-400">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        <span class="text-xs font-heading tracking-widest uppercase">Secured by SW-Cybernetic System</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer class="px-6 py-6 flex flex-col sm:flex-row justify-between items-center gap-3 text-gray-400 text-xs font-thai">
+    <span>© 2024 Sukhothai Wittayakom Digital Services. Scholarly Excellence.</span>
+    <div class="flex gap-5">
+      <a href="#" class="hover:text-primary transition-colors">Academic Portal</a>
+      <a href="#" class="hover:text-primary transition-colors">Support</a>
+      <a href="#" class="hover:text-primary transition-colors">Compliance</a>
+    </div>
+  </footer>
+
+  <!-- Help button -->
+  <button class="fixed bottom-6 right-6 w-12 h-12 rounded-full bg-primary text-white flex items-center justify-center shadow-lg hover:bg-primary-dark transition-colors">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+  </button>
+</div>
+
+<!-- ════════════════════════════════════════════
+     PAGE 3 – DASHBOARD
+════════════════════════════════════════════ -->
+<div id="page-dashboard" class="hidden min-h-screen flex flex-col">
+  <!-- Navbar -->
+  <nav class="navbar px-6 py-4 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <button id="btn-back-dashboard" class="w-8 h-8 rounded-full bg-lavender flex items-center justify-center text-primary hover:bg-lavender-mid transition-colors">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <span class="font-heading font-bold text-primary text-sm tracking-widest uppercase">Sukhothai Wittayakom</span>
+    </div>
+    <button id="btn-logout" class="text-gray-400 text-xs font-thai hover:text-red-500 transition-colors flex items-center gap-1">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      ออกจากระบบ
+    </button>
+  </nav>
+
+  <div class="flex-1 p-4 md:p-6 max-w-5xl mx-auto w-full">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+
+      <!-- Profile card -->
+      <div class="card p-5 flex items-center gap-4">
+        <div class="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary to-accent flex items-center justify-center text-white font-heading font-bold text-2xl flex-shrink-0">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+        </div>
+        <div>
+          <h2 id="db-name" class="font-heading font-bold text-xl text-gray-900">กำลังโหลด...</h2>
+          <p id="db-id" class="text-gray-400 text-sm font-thai">Student ID: –</p>
+          <!--<span class="inline-block mt-1.5 bg-lavender text-primary text-xs font-heading font-semibold px-3 py-1 rounded-full">GRADE 11-A</span>-->
+        </div>
+      </div>
+
+      <!-- Points card -->
+      <div class="card p-5">
+        <p class="text-gray-400 text-sm font-heading font-semibold tracking-widest uppercase mb-1">Points</p>
+        <p id="db-points" class="font-heading font-bold text-5xl text-primary">–</p>
+        <p class="text-green-500 text-sm font-thai mt-1 flex items-center gap-1">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+          สะสมคะแนนความดี
+        </p>
+      </div>
+
+      <!-- Rank tier -->
+      <div class="card p-5 md:col-span-2">
+        <div class="flex flex-col sm:flex-row sm:items-center gap-6">
+          <div class="flex items-center gap-4">
+            <div class="w-10 h-10 rounded-full bg-lavender flex items-center justify-center">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="#5B4FBE"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+            </div>
+            <span class="font-heading font-bold text-gray-400 text-sm tracking-widest uppercase">Rank Tier</span>
+          </div>
+          <div class="flex-1">
+            <p id="db-tier" class="tier-badge text-primary">–</p>
+          </div>
+          <div class="flex-1">
+            <div class="flex justify-between text-xs font-heading font-semibold text-gray-500 mb-2">
+              <span id="db-level">Level –</span>
+              <span id="db-rank-next">Next: –</span>
+            </div>
+            <div class="w-full h-3 bg-lavender rounded-full overflow-hidden">
+              <div id="db-progress" class="progress-bar h-full" style="width:0%"></div>
+            </div>
+          </div>
+        </div>
+        <!-- Criteria button -->
+        <button id="btn-criteria" class="mt-4 flex items-center gap-2 border-2 border-lavender-mid rounded-xl px-4 py-2.5 text-primary text-sm font-thai font-semibold hover:bg-lavender transition-colors">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          เกณฑ์การให้คะแนน
+        </button>
+      </div>
+    </div>
+
+    <!-- Send points + Activity + Badges -->
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+
+      <!-- Send deed button -->
+      <button id="btn-send-points" class="btn-primary p-5 flex items-center justify-center gap-3 text-lg font-thai rounded-2xl h-full min-h-[120px]">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+        ส่งแต้มทำความดี
+      </button>
+
+      <!-- Activity log -->
+      <div class="card p-5 sm:col-span-2">
+        <h3 class="font-heading font-bold text-gray-800 mb-3 flex items-center gap-2">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5B4FBE" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          Activity Log
+        </h3>
+        <div id="activity-log">
+          <p class="text-gray-400 text-sm text-center font-thai py-4">กำลังโหลด...</p>
+        </div>
+      </div>
+
+      <!-- Badges -->
+      <div class="card p-5 bg-primary sm:col-span-3 md:col-span-1">
+        <h3 class="font-heading font-bold text-white mb-4 flex items-center gap-2">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+          Badges
+        </h3>
+        <div class="flex gap-3 mb-4">
+          <div class="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center text-white">❤️</div>
+          <div class="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center text-white">🎓</div>
+          <div class="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center text-white">⚡</div>
+          <div class="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center">🔒</div>
+        </div>
+        <p class="text-white/70 text-xs font-thai">3 more badges until 'Elite Merit' status</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer class="px-6 py-6 border-t border-lavender mt-auto">
+    <div class="max-w-5xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-3">
+      <span class="font-heading font-bold text-gray-700">SWK DIGITAL</span>
+      <div class="flex gap-5 text-gray-400 text-sm font-thai">
+        <a href="#" class="hover:text-primary transition-colors">Academic Portal</a>
+        <a href="#" class="hover:text-primary transition-colors">Support</a>
+        <a href="#" class="hover:text-primary transition-colors">Compliance</a>
+      </div>
+      <span class="text-gray-400 text-xs">© 2024 Sukhothai Wittayakom Digital Services.</span>
+    </div>
+  </footer>
+</div>
+
+<!-- ════════════════════════════════════════════
+     PAGE 4 – CRITERIA (เกณฑ์การให้คะแนน)
+════════════════════════════════════════════ -->
+<div id="page-criteria" class="hidden min-h-screen flex flex-col">
+  <!-- Navbar -->
+  <nav class="navbar px-6 py-4 flex items-center gap-3">
+    <button id="btn-back-criteria" class="w-8 h-8 rounded-full bg-lavender flex items-center justify-center text-primary hover:bg-lavender-mid transition-colors">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+    </button>
+    <span class="font-heading font-bold text-gray-800">เกณฑ์การให้คะแนน</span>
+  </nav>
+
+  <div class="flex-1 px-5 py-8 max-w-2xl mx-auto w-full">
+    <h1 class="font-heading font-bold text-3xl text-primary mb-1">เกณฑ์การให้แต้มทำความดี</h1>
+    <p class="text-gray-400 font-thai mb-8">ร่วมสร้างสรรค์สังคมโรงเรียนที่น่าอยู่ผ่านกิจกรรมจิตอาสา</p>
+
+    <div class="grid grid-cols-2 gap-4 mb-10">
+      <!-- เก็บขยะ -->
+      <div class="card p-5 activity-card">
+        <div class="w-12 h-12 rounded-xl bg-lavender flex items-center justify-center mb-3 text-2xl">🗑️</div>
+        <h3 class="font-heading font-bold text-gray-900 mb-1">เก็บขยะ</h3>
+        <p class="text-gray-400 text-sm font-thai mb-3">ช่วยรักษาความสะอาดบริเวณโรงเรียน</p>
+        <span class="inline-block bg-lavender text-primary text-sm font-heading font-bold px-3 py-1 rounded-full">+20 POINT</span>
+      </div>
+
+      <!-- ปิดไฟและแอร์ -->
+      <div class="card p-5 activity-card border-2 border-primary">
+        <div class="w-12 h-12 rounded-xl bg-primary flex items-center justify-center mb-3 text-2xl">💡</div>
+        <h3 class="font-heading font-bold text-gray-900 mb-1">ปิดไฟและแอร์</h3>
+        <p class="text-gray-400 text-sm font-thai mb-3">หลังเลิกเรียนเพื่อประหยัดพลังงาน</p>
+        <span class="inline-block bg-primary text-white text-sm font-heading font-bold px-3 py-1 rounded-full">+25 POINT</span>
+      </div>
+
+      <!-- ทำความสะอาดห้อง -->
+      <div class="card p-5 activity-card">
+        <div class="w-12 h-12 rounded-xl bg-lavender flex items-center justify-center mb-3 text-2xl">🧹</div>
+        <h3 class="font-heading font-bold text-gray-900 mb-1">ทำความสะอาดห้อง</h3>
+        <p class="text-gray-400 text-sm font-thai mb-3">ดูแลห้องเรียนรวมและห้องปฏิบัติการ</p>
+        <span class="inline-block bg-lavender text-primary text-sm font-heading font-bold px-3 py-1 rounded-full">+30 POINT</span>
+      </div>
+
+      <!-- กิจกรรมอาสาอื่นๆ -->
+      <div class="card p-5 activity-card">
+        <div class="w-12 h-12 rounded-xl bg-lavender flex items-center justify-center mb-3 text-2xl">🤝</div>
+        <h3 class="font-heading font-bold text-gray-900 mb-1">กิจกรรมอาสาอื่นๆ</h3>
+        <p class="text-gray-400 text-sm font-thai mb-3">ช่วยงานครูหรือกิจกรรมส่วนรวม</p>
+        <span class="inline-block bg-lavender text-primary text-sm font-heading font-bold px-3 py-1 rounded-full">+15 POINT</span>
+      </div>
+    </div>
+
+    <!-- Rewards -->
+    <h2 class="font-heading font-bold text-xl text-gray-900 mb-4 flex items-center gap-2">
+      <div class="w-1 h-6 bg-primary rounded-full"></div>
+      ของรางวัลสำหรับผู้ทำความดี 3 อันดับแรก
+    </h2>
+
+    <div class="card p-6 border-2 border-primary text-center max-w-xs mx-auto">
+      <div class="text-4xl mb-3">🏅</div>
+      <p class="font-heading font-bold text-primary text-lg mb-3">ที่ 1-3 อันดับแรกจะได้รับ</p>
+      <div class="w-24 h-24 mx-auto rounded-xl bg-gray-900 flex items-center justify-center mb-3">
+        <span class="text-4xl">❓</span>
+      </div>
+      <p class="text-gray-600 font-thai text-sm">รางวัลปริศนา<br/>ที่ทางสภานักเรียนจัดเตรียมให้</p>
+    </div>
+
+    <!-- Rank tiers info -->
+    <div class="mt-8 card p-6">
+      <h3 class="font-heading font-bold text-gray-800 mb-4">ระดับ Rank Tier</h3>
+      <div class="space-y-3">
+        <div class="flex items-center gap-3">
+          <span class="w-24 font-heading font-bold text-yellow-500">Top Class</span>
+          <span class="text-gray-500 text-sm font-thai">10 อันดับแรกที่มีคะแนนสูงสุด</span>
+        </div>
+        <div class="flex items-center gap-3">
+          <span class="w-24 font-heading font-bold text-cyan-400">Diamond</span>
+          <span class="text-gray-500 text-sm font-thai">คะแนนสูงกว่า 80% ของผู้ใช้ทั้งหมด</span>
+        </div>
+        <div class="flex items-center gap-3">
+          <span class="w-24 font-heading font-bold text-yellow-600">Gold</span>
+          <span class="text-gray-500 text-sm font-thai">คะแนนสูงกว่า 50% ของผู้ใช้ทั้งหมด</span>
+        </div>
+        <div class="flex items-center gap-3">
+          <span class="w-24 font-heading font-bold text-gray-400">Silver</span>
+          <span class="text-gray-500 text-sm font-thai">คะแนนสูงกว่า 30% ของผู้ใช้ทั้งหมด</span>
+        </div>
+        <div class="flex items-center gap-3">
+          <span class="w-24 font-heading font-bold text-gray-300">No Rank</span>
+          <span class="text-gray-500 text-sm font-thai">ยังไม่ผ่านเกณฑ์ใด</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════
+     PAGE 5 – SUBMIT DEED
+════════════════════════════════════════════ -->
+<div id="page-submit" class="hidden min-h-screen flex flex-col">
+  <!-- Navbar -->
+  <nav class="navbar px-6 py-4 flex items-center gap-3">
+    <button id="btn-back-submit" class="w-8 h-8 rounded-full bg-lavender flex items-center justify-center text-primary hover:bg-lavender-mid transition-colors">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+    </button>
+    <div class="w-9 h-9 rounded-xl bg-primary flex items-center justify-center">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c3 3 9 3 12 0v-5"/></svg>
+    </div>
+    <span class="font-heading font-bold text-primary text-sm tracking-widest uppercase">Sukhothai Wittayakom</span>
+  </nav>
+
+  <div class="flex-1 px-5 py-6 max-w-xl mx-auto w-full">
+    <!-- Flower decoration -->
+    <div class="flex justify-center mb-2">
+      <svg width="50" height="50" viewBox="0 0 200 200" opacity="0.15">
+        <g fill="#5B4FBE"><ellipse cx="100" cy="50" rx="25" ry="45"/><ellipse cx="100" cy="150" rx="25" ry="45"/><ellipse cx="50" cy="100" rx="45" ry="25"/><ellipse cx="150" cy="100" rx="45" ry="25"/><ellipse cx="65" cy="65" rx="25" ry="45" transform="rotate(45 65 65)"/><ellipse cx="135" cy="135" rx="25" ry="45" transform="rotate(45 135 135)"/><ellipse cx="135" cy="65" rx="25" ry="45" transform="rotate(-45 135 65)"/><ellipse cx="65" cy="135" rx="25" ry="45" transform="rotate(-45 65 135)"/><circle cx="100" cy="100" r="18"/></g>
+      </svg>
+    </div>
+
+    <h1 class="font-heading font-bold text-3xl text-primary text-center mb-1">แบบบันทึกการทำความดี</h1>
+    <p class="text-gray-400 font-thai text-center mb-6">Document your positive impact on the community.</p>
+
+    <!-- Time warning -->
+    <div id="time-warning" class="hidden bg-orange-50 border border-orange-200 rounded-2xl px-4 py-3 mb-4 flex items-center gap-2">
+      <span class="text-orange-500">⏰</span>
+      <p class="text-orange-600 text-sm font-thai">ส่งแต้มได้เฉพาะเวลา 06:00 – 17:00 น. เท่านั้น</p>
+    </div>
+
+    <div class="card p-6">
+      <!-- Activity type -->
+      <div class="mb-5">
+        <div class="flex items-center justify-between mb-2">
+          <label class="text-sm font-heading font-semibold text-gray-700">Type of Activity</label>
+          <div class="w-6 h-6 rounded-full bg-primary flex items-center justify-center">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="white"><polyline points="20 6 9 17 4 12"/></svg>
+          </div>
+        </div>
+        <select id="activity-type" class="form-input appearance-none">
+          <option value="">เลือกกิจกรรมที่คุณได้ไปทำมา</option>
+          <option value="เก็บขยะ">เก็บขยะ (+20 คะแนน)</option>
+          <option value="ปิดไฟและแอร์">ปิดไฟและแอร์ (+25 คะแนน)</option>
+          <option value="ทำความสะอาดห้องเรียน">ทำความสะอาดห้องเรียน (+30 คะแนน)</option>
+          <option value="กิจกรรมอาสาอื่นๆ">กิจกรรมอาสาอื่นๆ (+15 คะแนน)</option>
+        </select>
+      </div>
+
+      <!-- Description -->
+      <div class="mb-5">
+        <div class="flex items-center justify-between mb-2">
+          <label class="text-sm font-heading font-semibold text-gray-700">Description</label>
+          <span id="desc-count" class="text-xs text-gray-400">0/300</span>
+        </div>
+        <textarea id="activity-desc" maxlength="300" placeholder="รายละเอียดของสิ่งที่คุณได้ไปทำ" class="form-input resize-none" rows="4"></textarea>
+      </div>
+
+      <!-- Photo upload -->
+      <div class="mb-6">
+        <label class="text-sm font-heading font-semibold text-gray-700 mb-2 block">Evidence (Photo)</label>
+        <div id="upload-area" class="upload-area p-8 flex flex-col items-center justify-center gap-2">
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#5B4FBE" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/><line x1="12" y1="5" x2="12" y2="5.01"/></svg>
+          <span class="text-primary font-thai font-semibold">Upload Photo</span>
+          <span class="text-gray-400 text-xs font-thai">คลิกเพื่อเลือกรูปภาพ</span>
+        </div>
+        <input id="photo-upload" type="file" accept="image/*" class="hidden" />
+        <img id="photo-preview" class="hidden mt-3 w-full rounded-xl object-cover max-h-48" />
+      </div>
+
+      <!-- Submit button -->
+      <button id="btn-confirm-submit" class="btn-primary w-full py-4 text-base font-thai flex items-center justify-center gap-2">
+        Confirm Submission →
+      </button>
+
+      <p class="text-center text-gray-400 text-xs font-thai mt-3">เราจะทำการบันทึกข้อมูลที่ท่านได้ส่งไว้</p>
+    </div>
+
+    <!-- Decorative flowers at bottom -->
+    <div class="flex justify-center gap-4 mt-8 opacity-20">
+      <svg width="30" height="30" viewBox="0 0 200 200"><g fill="#5B4FBE"><ellipse cx="100" cy="50" rx="25" ry="45"/><ellipse cx="100" cy="150" rx="25" ry="45"/><ellipse cx="50" cy="100" rx="45" ry="25"/><ellipse cx="150" cy="100" rx="45" ry="25"/><circle cx="100" cy="100" r="18"/></g></svg>
+      <svg width="30" height="30" viewBox="0 0 200 200"><g fill="#967BB6"><ellipse cx="100" cy="50" rx="25" ry="45"/><ellipse cx="100" cy="150" rx="25" ry="45"/><ellipse cx="50" cy="100" rx="45" ry="25"/><ellipse cx="150" cy="100" rx="45" ry="25"/><circle cx="100" cy="100" r="18"/></g></svg>
+      <svg width="30" height="30" viewBox="0 0 200 200"><g fill="#5B4FBE"><ellipse cx="100" cy="50" rx="25" ry="45"/><ellipse cx="100" cy="150" rx="25" ry="45"/><ellipse cx="50" cy="100" rx="45" ry="25"/><ellipse cx="150" cy="100" rx="45" ry="25"/><circle cx="100" cy="100" r="18"/></g></svg>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer class="px-6 py-6 flex flex-col sm:flex-row justify-between items-center gap-3 text-gray-400 text-xs font-thai">
+    <span class="font-heading font-bold text-gray-700">SUKHOTHAI WITTAYAKOM</span>
+    <div class="flex gap-5">
+      <a href="#" class="hover:text-primary transition-colors">Academic Portal</a>
+      <a href="#" class="hover:text-primary transition-colors">Support</a>
+      <a href="#" class="hover:text-primary transition-colors">Privacy</a>
+    </div>
+    <span>© 2024 Sukhothai Wittayakom Digital Services. Scholarly Excellence.</span>
+  </footer>
+</div>
+
+<!-- ════════════════════════════════════════════
+     PAGE 6 – UMBRELLA IFRAME
+════════════════════════════════════════════ -->
+<!-- ════════════════════════════════════════════
+     PAGE X – SUBMISSION SUCCESS
+════════════════════════════════════════════ -->
+<div id="page-success" class="hidden min-h-screen flex flex-col items-center justify-center px-6">
+  <div class="max-w-xl w-full text-center">
+    <div class="card p-10 mb-6">
+      <div class="text-6xl mb-4">✅</div>
+      <h2 class="font-heading font-bold text-2xl text-gray-900 mb-2">Submission Successful</h2>
+      <p class="text-primary font-thai mb-4">ขอบคุณสำหรับการส่งแบบฟอร์มของคุณ</p>
+      <p class="text-gray-500 text-sm mb-6">Your contribution helps build a better school community. Our team will review your submission shortly.</p>
+      <button id="btn-success-back" class="btn-primary w-full py-3 text-base font-thai flex items-center justify-center gap-3 rounded-full">
+        <span class="w-6 h-6 bg-white/20 rounded-md flex items-center justify-center">🏠</span>
+        กลับสู่หน้าแรก
+      </button>
+    </div>
+  </div>
+</div>
+<div id="page-umbrella" class="hidden min-h-screen flex flex-col">
+  <nav class="navbar px-6 py-4 flex items-center gap-3">
+    <button id="btn-back-umbrella" class="w-8 h-8 rounded-full bg-lavender flex items-center justify-center text-primary hover:bg-lavender-mid transition-colors">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+    </button>
+    <div class="w-9 h-9 rounded-xl bg-primary flex items-center justify-center">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 12a11.05 11.05 0 0 0-22 0zm-5 7a3 3 0 0 1-6 0v-7"/></svg>
+    </div>
+    <span class="font-heading font-bold text-primary text-sm tracking-widest uppercase">ยืมร่ม – Umbrella Service</span>
+  </nav>
+  <div class="flex-1">
+    <iframe
+      src="https://docs.google.com/forms/d/e/1FAIpQLSc8SeVFaCBx00SBoClBoSAmmP0TnFNQxmONZ-0gpLWW3D0Aqg/viewform?embedded=true"
+      width="100%"
+      height="100%"
+      style="min-height: calc(100vh - 65px); border: none; display: block;"
+      frameborder="0"
+      marginheight="0"
+      marginwidth="0">
+      กำลังโหลด...
+    </iframe>
+  </div>
+</div>
+
+</body>
+</html>

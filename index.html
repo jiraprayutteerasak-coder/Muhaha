@@ -38,16 +38,14 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js";
     import {
-      getAuth, signInWithPopup, GoogleAuthProvider,
+      getAuth, signInWithPopup, signInWithRedirect, GoogleAuthProvider,
       signInAnonymously, onAuthStateChanged, signOut, createUserWithEmailAndPassword
     } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js";
     import {
       getFirestore, doc, getDoc, setDoc, updateDoc,
       collection, getDocs, addDoc, serverTimestamp, increment
     } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js";
-    import {
-      getStorage, ref, uploadBytes, getDownloadURL
-    } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-storage.js";
+    // Storage is no longer used: images will not be uploaded
 
     const firebaseConfig = {
       apiKey: "AIzaSyB6Cd4IMBo3hvg3tiPo6CcTGwvNHOYPi6c",
@@ -62,9 +60,20 @@
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db = getFirestore(app);
-    const storage = getStorage(app);
+    // const storage = getStorage(app); // storage disabled — images won't be uploaded
     const googleProvider = new GoogleAuthProvider();
+    // Restrict to school domain by default. If you need to test with other accounts,
+    // comment out the next line or change/remove the `hd` parameter.
     googleProvider.setCustomParameters({ hd: 'swk.ac.th' });
+
+    // Helper: whether current origin is allowed for Firebase Auth flows.
+    function originIsAllowed() {
+      if (location.protocol === 'file:') return false;
+      const host = location.hostname;
+      const authDomain = firebaseConfig.authDomain || '';
+      if (host === 'localhost' || host === '127.0.0.1' || host === authDomain) return true;
+      return false;
+    }
 
     // Defer DOM-dependent initialization until elements exist.
     window.addEventListener('DOMContentLoaded', () => {
@@ -223,6 +232,18 @@
 
     // ── Google Login ──────────────────────────────────────────────────────
     document.getElementById('btn-google-login').addEventListener('click', async () => {
+      if (location.protocol === 'file:') {
+        showToast('กรุณาเรียกหน้าเว็บผ่าน http://localhost หรือโดเมนที่เพิ่มใน Firebase (ไม่ใช่ file://).', 'error');
+        return;
+      }
+      if (!originIsAllowed()) {
+        showToast('โดเมนนี้ยังไม่ได้เพิ่มใน Firebase Authorized domains — ให้เพิ่มโดเมนใน Console ก่อน', 'error');
+        if (confirm('ต้องการเปิด Firebase Console เพื่อแก้ไข Authorized domains ตอนนี้หรือไม่?')) {
+          window.open(`https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/providers`, '_blank');
+        }
+        return;
+      }
+
       try {
         showToast('กำลังเข้าสู่ระบบ...', 'info');
         const result = await signInWithPopup(auth, googleProvider);
@@ -231,6 +252,24 @@
         showPage('dashboard');
         renderDashboard();
       } catch (e) {
+        console.error('Google sign-in error', e);
+        if (e.code === 'auth/unauthorized-domain') {
+          showToast('ข้อผิดพลาด: โดเมนยังไม่ถูกเพิ่มใน Authorized domains ของ Firebase', 'error');
+          if (confirm('เปิดหน้า Firebase Console เพื่อเพิ่มโดเมนหรือไม่?')) {
+            window.open(`https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/providers`, '_blank');
+          }
+          return;
+        }
+        if (e.code === 'auth/popup-blocked' || e.code === 'auth/popup-closed-by-user') {
+          try {
+            showToast('Popup ถูกบล็อก — พยายามใช้ redirect แทน', 'info');
+            await signInWithRedirect(auth, googleProvider);
+            return;
+          } catch (rerr) {
+            showToast('เข้าสู่ระบบไม่สำเร็จ: ' + rerr.message, 'error');
+            return;
+          }
+        }
         showToast('เข้าสู่ระบบไม่สำเร็จ: ' + e.message, 'error');
       }
     });
@@ -307,7 +346,7 @@
       const fileInput = document.getElementById('photo-upload');
       const file = fileInput.files[0];
 
-      // Require a photo as evidence
+      // Require a local photo as evidence but DO NOT upload it to Firebase Storage.
       if (!file) return showToast('กรุณาแนบรูปหลักฐานก่อนส่ง', 'error');
       if (!type) return showToast('กรุณาเลือกประเภทกิจกรรม', 'error');
       if (!desc) return showToast('กรุณาใส่รายละเอียด', 'error');
@@ -317,21 +356,19 @@
       btn.disabled = true;
 
       try {
-        let photoURL = '';
-        if (file) {
-          const storageRef = ref(storage, `activities/${currentUser.uid}/${Date.now()}_${file.name}`);
-          await uploadBytes(storageRef, file);
-          photoURL = await getDownloadURL(storageRef);
-        }
-
         const pts = activityPts[type] || 0;
 
-        // Save activity
+        // Save activity metadata (without uploading the attached photo).
         await addDoc(collection(db, 'users', currentUser.uid, 'activities'), {
-          type, desc, photoURL, points: pts, createdAt: serverTimestamp()
+          type,
+          desc,
+          photoAttached: true,
+          photoName: file.name || null,
+          points: pts,
+          createdAt: serverTimestamp()
         });
 
-        // Update total
+        // Update total points
         await updateDoc(doc(db, 'users', currentUser.uid), { points: increment(pts) });
 
         currentUserData.points = (currentUserData.points || 0) + pts;

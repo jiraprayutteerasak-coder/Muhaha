@@ -64,15 +64,15 @@
     const googleProvider = new GoogleAuthProvider();
     // Restrict to school domain by default. If you need to test with other accounts,
     // comment out the next line or change/remove the `hd` parameter.
-    googleProvider.setCustomParameters({ hd: 'swk.ac.th' });
+    //googleProvider.setCustomParameters({ hd: 'swk.ac.th' });
 
     // Helper: whether current origin is allowed for Firebase Auth flows.
     function originIsAllowed() {
       if (location.protocol === 'file:') return false;
-      const host = location.hostname;
-      const authDomain = firebaseConfig.authDomain || '';
-      if (host === 'localhost' || host === '127.0.0.1' || host === authDomain) return true;
-      return false;
+      // const host = location.hostname;
+      // const authDomain = firebaseConfig.authDomain || '';
+      // if (host === 'localhost' || host === '127.0.0.1' || host === authDomain) return true;
+       return true;
     }
 
     // Defer DOM-dependent initialization until elements exist.

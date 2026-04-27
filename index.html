@@ -392,7 +392,7 @@
 
         // Redirect to the standalone success page after a short delay
         setTimeout(() => {
-          try { window.location.href = 'send_success.html'; }
+          try { window.location.href = './send_success.html'; }
           catch (redirErr) { console.error('redirect failed', redirErr); showPage('success'); }
         }, 700);
       } catch (e) {

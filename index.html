@@ -246,11 +246,17 @@
 
       try {
         showToast('กำลังเข้าสู่ระบบ...', 'info');
+        const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+        if (isMobile) {
+    // ถ้าเป็นมือถือให้ใช้ Redirect แทน Popup
+        await signInWithRedirect(auth, googleProvider);
+      } else {
         const result = await signInWithPopup(auth, googleProvider);
         currentUser = result.user;
         await loadUserData(result.user);
         showPage('dashboard');
         renderDashboard();
+       }
       } catch (e) {
         console.error('Google sign-in error', e);
         if (e.code === 'auth/unauthorized-domain') {
@@ -343,13 +349,16 @@
     document.getElementById('btn-confirm-submit').addEventListener('click', async () => {
       const type = document.getElementById('activity-type').value;
       const desc = document.getElementById('activity-desc').value.trim();
+      const MIN_DESC = 20; // require at least 20 characters
       const fileInput = document.getElementById('photo-upload');
       const file = fileInput.files[0];
 
       // Require a local photo as evidence but DO NOT upload it to Firebase Storage.
+      if (!currentUser) return showToast('กรุณาเข้าสู่ระบบก่อนส่ง', 'error');
       if (!file) return showToast('กรุณาแนบรูปหลักฐานก่อนส่ง', 'error');
       if (!type) return showToast('กรุณาเลือกประเภทกิจกรรม', 'error');
       if (!desc) return showToast('กรุณาใส่รายละเอียด', 'error');
+      if (desc.length < MIN_DESC) return showToast(`กรุณาใส่รายละเอียดอย่างน้อย ${MIN_DESC} ตัวอักษร`, 'error');
 
       const btn = document.getElementById('btn-confirm-submit');
       btn.textContent = 'กำลังบันทึก...';
@@ -381,9 +390,10 @@
         document.getElementById('desc-count').textContent = '0/300';
         document.getElementById('photo-preview').classList.add('hidden');
 
-        // Show submission success page
+        // Redirect to the standalone success page after a short delay
         setTimeout(() => {
-          showPage('success');
+          try { window.location.href = 'send_success.html'; }
+          catch (redirErr) { console.error('redirect failed', redirErr); showPage('success'); }
         }, 700);
       } catch (e) {
         showToast('เกิดข้อผิดพลาด: ' + e.message, 'error');
@@ -1062,10 +1072,10 @@
         </div>
         <select id="activity-type" class="form-input appearance-none">
           <option value="">เลือกกิจกรรมที่คุณได้ไปทำมา</option>
-          <option value="เก็บขยะ">เก็บขยะ (+20 คะแนน)</option>
-          <option value="ปิดไฟและแอร์">ปิดไฟและแอร์ (+25 คะแนน)</option>
-          <option value="ทำความสะอาดห้องเรียน">ทำความสะอาดห้องเรียน (+30 คะแนน)</option>
-          <option value="กิจกรรมอาสาอื่นๆ">กิจกรรมอาสาอื่นๆ (+15 คะแนน)</option>
+          <option value="เก็บขยะ">เก็บขยะ</option>
+          <option value="ปิดไฟและแอร์">ปิดไฟและแอร์</option>
+          <option value="ทำความสะอาดห้องเรียน">ทำความสะอาดห้องเรียน</option>
+          <option value="กิจกรรมอาสาอื่นๆ">กิจกรรมอาสาอื่นๆ</option>
         </select>
       </div>
 
@@ -1073,9 +1083,10 @@
       <div class="mb-5">
         <div class="flex items-center justify-between mb-2">
           <label class="text-sm font-heading font-semibold text-gray-700">Description</label>
-          <span id="desc-count" class="text-xs text-gray-400">0/300</span>
+            <span id="desc-count" class="text-xs text-gray-400">0/300</span>
         </div>
-        <textarea id="activity-desc" maxlength="300" placeholder="รายละเอียดของสิ่งที่คุณได้ไปทำ" class="form-input resize-none" rows="4"></textarea>
+          <textarea id="activity-desc" maxlength="300" placeholder="รายละเอียดของสิ่งที่คุณได้ไปทำ (อย่างน้อย 20 ตัวอักษร)" class="form-input resize-none" rows="4"></textarea>
+          <p class="text-xs text-gray-400 mt-2">หมายเหตุ: กรอกรายละเอียดอย่างน้อย 20 ตัวอักษร</p>
       </div>
 
       <!-- Photo upload -->
